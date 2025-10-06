@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tool 3 - Excel Creator</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body { background: #eef2f7; }
+  .form-container { background: #fff; padding: 26px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); }
+  .box-section { border: 2px solid #dee2e6; border-radius: 8px; padding: 15px; margin-bottom: 15px; background: #f8f9fa; }
+  .box-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .box-title { font-weight: bold; font-size: 1.1rem; color: #0d6efd; }
+  #numbersList li { display:flex; justify-content:space-between; align-items:center; }
+  .count-badge { font-weight:600; }
+  .small-muted { font-size:0.85rem; color:#6c757d; }
+  .spinner { width:1rem;height:1rem;border:.12rem solid #eee;border-top:.12rem solid #007bff;border-radius:50%;animation:spin 0.8s linear infinite;display:inline-block;vertical-align:middle;margin-left:6px;}
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+  .box-list { max-height: 200px; overflow-y: auto; }
+  .current-box { background: #d1e7dd; border-color: #0f5132; }
+</style>
+</head>
+<body>
+<div class="container py-5">
+  <div class="mx-auto form-container col-md-8">
+    <h2 class="text-center mb-3">📦 Tool 3 — Excel Creator with Boxes</h2>
+
+    <form id="excelForm" method="POST" action="{{ url_for('tool3_create_excel') }}">
+      <div class="mb-3">
+        <label class="form-label">Select File</label>
+        <select name="filename" id="filenameSelect" class="form-control" required>
+          {% for f in files %}
+            <option value="{{ f }}">{{ f }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">Output file name</label>
+        <input type="text" name="output_name" id="outputName" class="form-control" placeholder="Enter output file name (without extension)" required>
+      </div>
+
+      <!-- Box Management -->
+      <div class="mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <label class="form-label mb-0">Current Box</label>
+          <button type="button" id="addBoxBtn" class="btn btn-sm btn-success">➕ Add New Box</button>
+        </div>
+        <select id="currentBoxSelect" class="form-control">
+          <option value="Box 1">Box 1</option>
+        </select>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">Type Number / ID</label>
+        <input type="text" id="numbersInput" class="form-control" placeholder="Type a number and press Enter" autocomplete="off" />
+        <div class="small-muted mt-1">Press Enter after each number. Numbers will be added to the currently selected box.</div>
+      </div>
+
+      <!-- Counters -->
+      <div class="mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <label class="form-label mb-0">Overall Status</label>
+          <div>
+            Total: <span id="totalCount" class="badge bg-primary count-badge">0</span>
+            Found: <span id="foundCount" class="badge bg-success count-badge">0</span>
+            Not Found: <span id="notFoundCount" class="badge bg-danger count-badge">0</span>
+          </div>
+        </div>
+        <div id="feedback" class="small-muted"></div>
+      </div>
+
+      <!-- Boxes Display -->
+      <div class="mb-3">
+        <label class="form-label">📦 Boxes (Each box will be a separate sheet in Excel)</label>
+        <div id="boxesContainer"></div>
+      </div>
+
+      <div class="d-grid gap-2 mt-3">
+        <button id="createBtn" type="submit" class="btn btn-warning btn-lg">📥 Create Excel with All Boxes</button>
+        <a href="{{ url_for('home') }}" class="btn btn-secondary btn-lg">Back</a>
+      </div>
+    </form>
+
+    {% if download_link %}
+      <div class="alert alert-success mt-3">
+        File created! <a href="{{ download_link }}">⬇ Download here</a>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+(() => {
+  const filenameSelect = document.getElementById('filenameSelect');
+  const input = document.getElementById('numbersInput');
+  const feedback = document.getElementById('feedback');
+  const foundCountEl = document.getElementById('foundCount');
+  const notFoundCountEl = document.getElementById('notFoundCount');
+  const totalCountEl = document.getElementById('totalCount');
+  const form = document.getElementById('excelForm');
+  const currentBoxSelect = document.getElementById('currentBoxSelect');
+  const addBoxBtn = document.getElementById('addBoxBtn');
+  const boxesContainer = document.getElementById('boxesContainer');
+
+  // Data structure: boxes = { 'Box 1': { found: Set, notFound: Set }, ... }
+  const boxes = { 'Box 1': { found: new Set(), notFound: new Set() } };
+  let boxCounter = 1;
+
+  function getCurrentBox() {
+    return currentBoxSelect.value;
+  }
+
+  function addNewBox() {
+    boxCounter++;
+    const newBoxName = `Box ${boxCounter}`;
+    boxes[newBoxName] = { found: new Set(), notFound: new Set() };
+    
+    const option = document.createElement('option');
+    option.value = newBoxName;
+    option.textContent = newBoxName;
+    currentBoxSelect.appendChild(option);
+    currentBoxSelect.value = newBoxName;
+    
+    updateUI();
+  }
+
+  function deleteBox(boxName) {
+    if (Object.keys(boxes).length === 1) {
+      alert('Cannot delete the last box!');
+      return;
+    }
+    
+    if (!confirm(`Delete ${boxName}? All its items will be removed.`)) return;
+    
+    delete boxes[boxName];
+    
+    // Remove from select
+    for (let i = 0; i < currentBoxSelect.options.length; i++) {
+      if (currentBoxSelect.options[i].value === boxName) {
+        currentBoxSelect.remove(i);
+        break;
+      }
+    }
+    
+    updateUI();
+  }
+
+  function removeNumberFromBox(boxName, number) {
+    boxes[boxName].found.delete(number);
+    updateUI();
+  }
+
+  function updateUI() {
+    // Update boxes display
+    boxesContainer.innerHTML = '';
+    
+    Object.keys(boxes).forEach(boxName => {
+      const boxData = boxes[boxName];
+      const isCurrentBox = boxName === getCurrentBox();
+      
+      const boxDiv = document.createElement('div');
+      boxDiv.className = `box-section ${isCurrentBox ? 'current-box' : ''}`;
+      
+      const header = document.createElement('div');
+      header.className = 'box-header';
+      
+      const titleDiv = document.createElement('div');
+      titleDiv.className = 'box-title';
+      titleDiv.innerHTML = `
+        📦 ${boxName} 
+        <span class="badge bg-success ms-2">${boxData.found.size}</span>
+        ${isCurrentBox ? '<span class="badge bg-info ms-1">Active</span>' : ''}
+      `;
+      
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'btn btn-sm btn-outline-danger';
+      deleteBtn.textContent = '🗑 Delete Box';
+      deleteBtn.addEventListener('click', () => deleteBox(boxName));
+      
+      header.appendChild(titleDiv);
+      header.appendChild(deleteBtn);
+      boxDiv.appendChild(header);
+      
+      if (boxData.found.size > 0) {
+        const ul = document.createElement('ul');
+        ul.className = 'list-group box-list';
+        
+        Array.from(boxData.found).forEach(num => {
+          const li = document.createElement('li');
+          li.className = 'list-group-item list-group-item-sm d-flex justify-content-between align-items-center';
+          
+          const span = document.createElement('span');
+          span.textContent = num;
+          
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn btn-xs btn-outline-danger btn-sm';
+          removeBtn.textContent = 'Remove';
+          removeBtn.addEventListener('click', () => removeNumberFromBox(boxName, num));
+          
+          li.appendChild(span);
+          li.appendChild(removeBtn);
+          ul.appendChild(li);
+        });
+        
+        boxDiv.appendChild(ul);
+      } else {
+        const emptyMsg = document.createElement('div');
+        emptyMsg.className = 'text-muted small-muted text-center py-2';
+        emptyMsg.textContent = 'No items in this box yet';
+        boxDiv.appendChild(emptyMsg);
+      }
+      
+      boxesContainer.appendChild(boxDiv);
+    });
+    
+    // Update overall counters
+    let totalFound = 0;
+    let totalNotFound = 0;
+    
+    Object.values(boxes).forEach(box => {
+      totalFound += box.found.size;
+      totalNotFound += box.notFound.size;
+    });
+    
+    foundCountEl.textContent = totalFound;
+    notFoundCountEl.textContent = totalNotFound;
+    totalCountEl.textContent = totalFound + totalNotFound;
+  }
+
+  // Event listeners
+  addBoxBtn.addEventListener('click', addNewBox);
+  
+  currentBoxSelect.addEventListener('change', () => {
+    updateUI();
+  });
+
+  filenameSelect.addEventListener('change', () => {
+    // Reset everything when file changes
+    Object.keys(boxes).forEach(key => delete boxes[key]);
+    boxes['Box 1'] = { found: new Set(), notFound: new Set() };
+    boxCounter = 1;
+    
+    currentBoxSelect.innerHTML = '<option value="Box 1">Box 1</option>';
+    currentBoxSelect.value = 'Box 1';
+    
+    updateUI();
+    feedback.textContent = '';
+    input.value = '';
+  });
+
+  input.addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const raw = input.value.trim();
+    input.value = '';
+    if (!raw) return;
+
+    const number = raw;
+    const currentBox = getCurrentBox();
+    const boxData = boxes[currentBox];
+
+    // Check if already exists in ANY box
+    let alreadyExists = false;
+    Object.entries(boxes).forEach(([name, data]) => {
+      if (data.found.has(number) || data.notFound.has(number)) {
+        alreadyExists = true;
+        feedback.textContent = `${number} already checked in ${name}.`;
+        feedback.style.color = 'orange';
+      }
+    });
+    
+    if (alreadyExists) return;
+
+    feedback.innerHTML = `Checking <strong>${number}</strong>... <span class="spinner"></span>`;
+    feedback.style.color = '#333';
+
+    try {
+      const fd = new FormData();
+      fd.append('filename', filenameSelect.value);
+      fd.append('number', number);
+      fd.append('box_name', currentBox);
+
+      const resp = await fetch('/tool3/check_number', { method: 'POST', body: fd });
+      if (!resp.ok) throw new Error('Network error');
+
+      const data = await resp.json();
+
+      if (data.status === 'found') {
+        boxData.found.add(number);
+        feedback.textContent = `${number} ✅ Found and added to ${currentBox}.`;
+        feedback.style.color = 'green';
+      } else if (data.status === 'not_found') {
+        boxData.notFound.add(number);
+        feedback.textContent = `${number} ❌ Not found.`;
+        feedback.style.color = 'red';
+      } else {
+        feedback.textContent = data.message || 'Unexpected response';
+        feedback.style.color = 'orange';
+      }
+    } catch (err) {
+      console.error(err);
+      feedback.textContent = 'Error checking number (network/server).';
+      feedback.style.color = 'red';
+    }
+
+    updateUI();
+  });
+
+  form.addEventListener('submit', (e) => {
+    // Form submits normally, the backend will handle the boxes
+  });
+
+  // Initial UI
+  updateUI();
+})();
+</script>
+</body>
+</html>
